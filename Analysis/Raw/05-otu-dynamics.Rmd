@@ -1,0 +1,176 @@
+---
+title: "Taxonomic group OTU dynamics"
+author: "Michelle Berry"
+output: pdf_document
+---
+
+
+```{r global_options, echo = FALSE}
+
+knitr::opts_chunk$set(
+  fig.align = 'center', 
+  warning = FALSE, 
+  message = FALSE
+)
+
+```
+
+```{r, echo=FALSE}
+source("chabs-global.R")
+library(psych)
+```
+
+
+# Taxa associated with bloom
+```{r}
+ncbacteria <- 
+  erie_scale %>%
+  subset_taxa(Class != "Cyanobacteria")
+
+n = min(sample_sums(erie))
+thresh = 0.001
+
+# Calculate mean relative abundance for each OTU
+tax_mean <- taxa_sums(ncbacteria)/nsamples(ncbacteria)
+
+# Prune low abundance taxa using thresh as mean relative abundance
+nc_prune <- 
+  ncbacteria %>%
+    prune_taxa(tax_mean > thresh*n, .)
+
+env_dat <- data.frame(sample_data(ncbacteria))
+
+
+# Calculate correlation between ph and nc-bacteria  
+ph_corrs <-  corr.test(
+    x = data.frame(env_dat$pH), 
+    y = t(otu_table(nc_prune)),
+    method = "spearman",
+    use = "complete",
+    adjust = "fdr"
+)
+
+which_sigs <- which(ph_corrs$p < 0.05)  
+sig_otus <- colnames(ph_corrs$p)[which_sigs]
+
+
+ph_corrs_dat <- data.frame(tax_table(nc_prune)) %>% filter(Species %in% sig_otus)
+ph_corrs_dat$Rho <- ph_corrs$r[which_sigs]
+
+pander(ph_corrs_dat[1:10,])
+
+##############################################################
+# Calculate correlation between chl a and nc-bacteria  
+chla_corrs <-  corr.test(
+    x = data.frame(env_dat$Chla), 
+    y = t(otu_table(nc_prune)),
+    method = "spearman",
+    use = "complete",
+    adjust = "fdr"
+)
+
+which_sigs <- which(chla_corrs$p < 0.05)  
+sig_otus <- colnames(chla_corrs$p)[which_sigs]
+
+
+chla_corrs_dat <- data.frame(tax_table(nc_prune)) %>% filter(Species %in% sig_otus)
+chla_corrs_dat$Rho <- chla_corrs$r[which_sigs]
+
+pander(chla_corrs_dat[1:10,])
+
+# How much overlap is there?
+length(intersect(chla_corrs_dat$Species, ph_corrs_dat$Species))
+
+
+write.csv(ph_corrs_dat, "../../Tables/TableS2.csv", row.names = FALSE)
+```
+
+# Figure 5
+```{r }
+nc_prune %>% 
+  tax_glom(taxrank = "Family") %>% 
+  psmelt() %>%
+  group_by(Family) %>%
+  summarise(mean = mean(Abundance)) %>%
+  arrange(desc(mean))
+```
+AcI is the most abundant clade
+
+```{r}
+groups <- c("acI", "bacI", "betI", "Planctomycetaceae", "bacV")
+
+nc_melt <- nc_prune %>%
+  transform_sample_counts(function(x) {x/sum(x)} ) %>%
+  psmelt() %>%
+  order_dates
+
+group_otu_plots <- lapply(groups, function(x) {
+  group_df <- 
+    nc_melt %>%
+      filter(Family == x)
+  
+  group_otus <- unique(group_df$Species)
+  
+  group_plots <- lapply(group_otus, function(y) {
+    df_otu <- filter(group_df, OTU == y)
+    plot <- plot_otus(df = df_otu, otu = y, taxrank = "Genus")
+  })
+  return(group_plots)
+})
+
+
+station_legend <- grab_legend(group_otu_plots[[1]][[1]])
+
+group_otu_plots <- lapply(group_otu_plots, function(x){
+  lapply(x, function(y) {
+    y + theme(legend.position = "none")
+  })
+})
+```
+
+```{r fig.height=8, fig.width=12}
+# AcI plot
+aci_plots <- group_otu_plots[[1]]
+
+acI_plots <- arrangeGrob(
+  aci_plots[[3]], aci_plots[[4]], aci_plots[[8]], aci_plots[[6]], 
+  aci_plots[[2]], aci_plots[[1]], aci_plots[[5]], aci_plots[[7]], 
+  station_legend,
+  ncol = 4, nrow = 3
+)
+
+ggdraw() +
+  draw_plot(acI_plots)
+
+ggsave("../../Plots/Figure5.pdf", plot = acI_plots, width = 12, height = 8) 
+```
+
+# Figure S7-S10
+```{r}
+S7 <- do.call(arrangeGrob, group_otu_plots[[2]])
+ggdraw() +
+  draw_plot(S7) 
+
+ggsave("../../Plots/FigureS7.pdf", width = 12, height = 8) 
+
+S8 <- do.call(arrangeGrob, group_otu_plots[[3]])
+ggdraw() +
+  draw_plot(S8) 
+
+ggsave("../../Plots/FigureS8.pdf", width = 6, height = 12) 
+
+S9 <- do.call(arrangeGrob, group_otu_plots[[4]])
+ggdraw() +
+  draw_plot(S9) 
+
+ggsave("../../Plots/FigureS9.pdf", width = 12, height = 8) 
+
+S10 <- do.call(arrangeGrob, group_otu_plots[[5]])
+ggdraw() +
+  draw_plot(S10) 
+
+ggsave("../../Plots/FigureS10.pdf", width = 12, height = 8) 
+
+
+```
+

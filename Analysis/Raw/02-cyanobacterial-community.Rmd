@@ -1,0 +1,186 @@
+---
+title: "Cyanobacterial community dynamics"
+author: "Michelle Berry"
+output: html_document
+---
+
+```{r global_options, echo = FALSE}
+
+knitr::opts_chunk$set(
+  fig.align = 'center', 
+  warning = FALSE, 
+  message = FALSE
+)
+
+```
+
+```{r, echo=FALSE}
+source("chabs-global.R")
+```
+
+# Figure 2: Cyano OTUs
+In this figure we will display in part A a barplot with the relative abundance of
+cyanobacteria genera over time and site. In part B we will break up these groups
+into OTUs and show lineplots for each non-rare OTU over time (mean rel abundance > 0.0001) and site. 
+
+
+```{r}
+## Select only cyano OTUs that have mean relative abundace > 0.0005
+n = 15000
+thresh = 0.0005
+
+# Calculate mean relative abundance for each OTU
+tax_mean <- taxa_sums(erie_scale)/nsamples(erie_scale)
+
+# Prune low abundance taxa using thresh as mean relative abundance
+erie_prune_0001 <- 
+  erie_scale %>%
+    prune_taxa(tax_mean > thresh*n, .)
+
+
+# Create a melted data frame of selected cyanobacteria OTUs
+cyano_otus <- 
+  erie_prune_0001 %>%
+    transform_sample_counts(function(x) {x/sum(x)}) %>%
+    subset_taxa(Class == "Cyanobacteria") %>%
+    psmelt() %>%
+    order_dates()
+```
+
+```{r include = FALSE}
+na_dates <- data.frame(OTU = rep(levels(cyano_otus$Species), 3), Station = c(rep("nearshore1", 9), rep("nearshore2", 9), rep("offshore", 9)), Date = rep("8/11", 27))
+
+cyano_otus1 <- 
+  cyano_otus %>%
+    full_join(na_dates, by = c("Date" = "Date", "Station" = "Station", "OTU" = "OTU")) %>%
+    order_dates()
+```
+
+```{r}
+################# Plot A #######################
+
+cyano_genus <-
+  cyano_otus %>%
+    group_by(Genus, Date, Station) %>%
+    summarize(Abundance = sum(Abundance)) %>%
+    arrange(Genus) %>%
+    order_dates()
+
+
+plot2a <- ggplot(cyano_genus, aes(x = Date, y = Abundance, fill = Genus)) +
+  facet_grid(~Station) +
+  geom_bar(stat = "identity") +
+  ylab("rel. abundance") + 
+  scale_x_discrete(
+      breaks = c("7/8", "8/4", "9/2", "10/6"),
+      labels = c("Jul", "Aug", "Sep", "Oct"),
+      drop = FALSE
+    ) +
+  scale_fill_manual(values = c("#377eb8", "#4daf4a", "#e41a1c", "#984ea3","#ff7f00")) + 
+  theme(
+    axis.title.x = element_blank(),
+    axis.title.y = element_text(size = 9),
+    strip.text = element_text(size = 11, face = "bold", hjust = 0),
+    strip.background = element_blank()
+  ) 
+
+genus_legend <- grab_legend(plot2a)
+
+plot2a <- plot2a + theme(legend.position = "none")
+```
+
+
+
+```{r}
+
+
+##################### Plot B #############################
+
+cyano_otu_names <- as.list(levels(cyano_otus$Species))
+names(cyano_otu_names) <- levels(cyano_otus$Species)
+
+
+# Generate a lineplot for each cyanobacteria with mean relative abundance > 0.0001
+cyano_otu_plots <- lapply(cyano_otu_names, 
+  function(otu) {
+    df_otu <- filter(cyano_otus, OTU == otu)
+    plot <- plot_otus(df = df_otu, otu = otu, taxrank = "Genus") 
+    return(plot)
+  }
+)
+
+# Generate legend
+station_legend <- grab_legend(cyano_otu_plots$Otu00007)
+
+cyano_otu_plots <- lapply(cyano_otu_plots, function(x) x + theme(legend.position = "none") )
+
+plot2b <- arrangeGrob(
+  cyano_otu_plots$Otu00007, cyano_otu_plots$Otu00177, cyano_otu_plots$Otu00005,
+  cyano_otu_plots$Otu00044, cyano_otu_plots$Otu00304, cyano_otu_plots$Otu00037, 
+  cyano_otu_plots$Otu00147, cyano_otu_plots$Otu00193, cyano_otu_plots$Otu00049,
+  ncol = 3, nrow = 3
+)
+
+
+```
+
+
+```{r fig.width=10, fig.height=8}
+##################### Compile plots #####################################
+
+ggdraw() +
+  draw_plot(plot2a, x = 0.03, y = 0.7, width = .8, height = 0.28) +
+  draw_plot(genus_legend, x = 0.83, y = .76, width = .16, height = .18) + 
+  draw_plot(plot2b, x = 0.03, y = 0.02, width = .8, height = 0.64) +
+  draw_plot(station_legend, x = 0.80, y = .5, width = .18, height = .18) + 
+  draw_plot_label(c("A", "B"), c(0.02, 0.02), c(0.99, 0.68), size = 14) 
+
+ggsave("../../Plots/Figure2.pdf", width = 10, height = 8) 
+
+```
+
+What is the most abundant genus?
+```{r}
+cyano_genus %>%
+  group_by(Genus) %>%
+  summarise(median(Abundance))
+
+```
+
+What if we look at each site separately?
+```{r}
+cyano_genus %>%
+  group_by(Genus, Station) %>%
+  summarise(median(Abundance))
+```
+
+Which Cyanobacteria are associated with each other? Spearman's rho
+correlations are shown and significant
+correlations are bolded. 
+```{r}
+
+# Create a phyloseq object of only cyanobacteria OTUs
+cyano_physeq <- 
+  erie_prune_0001 %>%
+    transform_sample_counts(function(x) {x/sum(x)}) %>%
+    subset_taxa(Class == "Cyanobacteria")
+
+taxa_names(cyano_physeq) <- paste(
+  tax_table(cyano_physeq)[ , "Genus"], 
+  taxa_names(cyano_physeq)
+)
+
+# Run pairwise spearman correlation tests between all cyanobacteria genera.
+cyano_corrs_spearman <- corr.test(
+  t(otu_table(cyano_physeq)), 
+  use = "complete", 
+  method = "spearman", 
+  adjust = "fdr"
+)
+
+emphasize.strong.cells(which(cyano_corrs_spearman$p < 0.05, arr.ind = TRUE))
+pander(signif(cyano_corrs_spearman$r, digits = 2))
+
+write.csv(cyano_corrs_spearman$p, "../../Tables/TableS1.csv", row.names = FALSE)
+
+```

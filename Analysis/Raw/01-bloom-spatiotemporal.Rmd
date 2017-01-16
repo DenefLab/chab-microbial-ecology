@@ -1,0 +1,207 @@
+---
+title: "Bloom spatiotemporal dynamics"
+author: "Michelle Berry"
+output: html_document
+---
+
+```{r global_options, echo = FALSE}
+
+knitr::opts_chunk$set(
+  fig.align = 'center', 
+  warning = FALSE, 
+  message = FALSE
+)
+
+```
+
+```{r, echo=FALSE}
+source("chabs-global.R")
+```
+
+# Figure 1
+Goal is to create figure 1, showing pigment concentrations, toxin concentration, and 
+proportion of cyanobacterial reads over time and stations. 
+
+```{r figure1, fig.height=6, fig.width=6}
+
+# Calculate relative abundance of Cyanobacteria at each date
+cyano_abundance <- 
+  erie_scale %>%
+    tax_glom(taxrank = "Phylum") %>%                        # conglomerate OTUs to phylum level
+    transform_sample_counts(function(x) {x/sum(x)} ) %>%    # transform to relative abundance
+    subset_taxa(Phylum == "Cyanobacteria") %>%              # Subset to just Cyanobacteria
+    psmelt() %>%                                            # melt phyloseq object
+    rename(Cyanobacteria = Abundance) %>%
+    select(Cyanobacteria, Date, Station)
+
+# Merge cyanobacteria data with nutrient df
+bloom_df <- 
+  nutrient %>%
+    left_join(cyano_abundance, by = c("Station", "Date")) %>%
+    mutate(Phycocyanin = ifelse(Phycocyanin > 80, 80, Phycocyanin)) %>%   # lower extreme values to plot better
+    select(Station, Date, Phycocyanin, Chla, ParMC, Cyanobacteria) %>%
+    melt(id.vars = c("Station", "Date")) %>%
+    order_dates_aug11()
+
+# Make a faceted ggplot of the four bloom variables over time and grouped by station
+bloom_plots <- ggplot(bloom_df, 
+  aes(x = Date, y = value, group = Station, color = Station, shape = Station)
+) +
+  facet_grid(variable~., scales = "free_y") +
+  geom_point(size = 1.3) +
+  geom_line(size = 1) + 
+  ylab("") +
+  scale_x_discrete(
+    breaks = c("7/8", "8/4", "9/2", "10/6"),
+    labels = c("Jul", "Aug", "Sep", "Oct"),
+    drop = FALSE
+  ) +
+  scale_color_manual(values = station_colors) + 
+  theme(
+    strip.background = element_blank(),
+    strip.text = element_text(size = 11),
+    axis.title.x = element_blank()
+  )
+
+
+station_legend <- grab_legend(bloom_plots) 
+
+bloom_plots
+
+ggsave("../../Plots/Figure1.pdf", plot = bloom_plots, width = 6, height = 5) 
+```
+
+## Figure 1 Statistics
+```{r fig.height=3.5, fig.width=10}
+par(mfrow = c(1,3))
+hist(nutrient$Chla)
+hist(nutrient$Phycocyanin)
+hist(nutrient$ParMC)
+```
+
+These distributions are very non-normal. Let's try log-scaling
+
+```{r, fig.height=3.5, fig.width=10}
+par(mfrow = c(1,3))
+hist(log2(nutrient$Chla), xlab = "log Chla", main = "")
+hist(log2(nutrient$Phycocyanin), xlab = "log Phycocyanin", main = "")
+hist(log2(nutrient$ParMC), xlab = "log ParMC", main = "")
+```
+
+These look better, but parmc and phycocyanin both have zeroes so we would need to add a constant. Better to use a Spearman's test than a Pearson's test. 
+
+
+```{r}
+ggplot(nutrient, aes(x = Chla, y = Phycocyanin)) +
+  geom_point() +
+  scale_y_continuous(trans = log_trans()) +
+  scale_x_continuous(trans = log_trans())
+
+# Calculate spearman correlation between Chla and phycocyanin for all sites
+cor.test(
+  x = nutrient$Chla, 
+  y = nutrient$Phycocyanin, 
+  alternative = "two.sided", 
+  method = "spearman"
+)
+
+```
+It looks like there is a pretty close correlation between chl a and phycocyanin
+measurements. 
+    
+
+
+```{r}
+
+ggplot(nutrient, aes(x = Phycocyanin, y = ParMC)) +
+  geom_point() +
+  scale_y_continuous(trans = log_trans()) +
+  scale_x_continuous(trans = log_trans())
+
+cor.test(
+  x = nutrient$Phycocyanin, 
+  y = nutrient$ParMC, 
+  alternative = "two.sided", 
+  method = "spearman"
+)
+
+```
+The statistical test shows that there are significant correlations between
+pigments and toxin, but the plot shows that there are several dates in which 
+the toxin levels are 0 but pigments are high, indicating that pigments are not
+always predictive of toxicity. 
+
+
+Do the nearshore and offshore sites have different bloom pigment concentrations?
+```{r}
+nutrient %>%
+  group_by(Station) %>%
+  summarise(median(Chla))
+
+```
+
+
+# Figure S1: Environmental variables
+```{r fig.height= 10, fig.width = 10}
+
+
+# Format
+nutrient_df <- 
+  sample_data(erie) %>%
+    order_dates()
+
+plot_nutrients <- function(df, nutrient, title, ylabs) {
+  ggplot(df, aes_string(
+    x = "Date",
+    y = nutrient,
+    group = "Station", 
+    shape = "Station", 
+    color = "Station")
+  ) +
+    scale_x_discrete(
+      breaks = c("7/8", "8/4", "9/2", "10/6"),
+      labels = c("Jul", "Aug", "Sep", "Oct"),
+      drop = FALSE
+    ) +
+    geom_line(size = 0.8) +
+    geom_point(size = 1.8) +
+    ggtitle(title) + 
+    xlab("") + 
+    ylab(ylabs) +       
+    scale_color_manual(values = station_colors) +
+    theme(
+        axis.title.y = element_text(size = 14),
+        plot.title = element_text(size = 16, face = "bold")
+    )
+}
+
+nutplot_vars <- c("SRP", "Nitrate", "Ammonia", "H2O2", "Temp", "Turbidity", "pH", "SpCond")
+nutplot_titles <- c("SRP", "Nitrate", "Ammonia", "H2O2", "Temperature", "Turbidity", "pH", "SpCond")
+nutplot_ylabs <- c(rep("ug/L", 3), "nM", "celsius", "NTU", "", "uS/cm")
+
+nutplots <- list()
+
+for (i in 1:length(nutplot_vars)) {
+  nutplots[[i]] <- plot_nutrients(
+    df = nutrient_df, 
+    nutrient = nutplot_vars[i], 
+    title = nutplot_titles[i],
+    ylabs = nutplot_ylabs[i]
+  )
+}
+
+
+legend <- grab_legend(nutplots[[1]])
+
+nutplots_noleg <- lapply(nutplots, function(x){ x + theme(legend.position = "none")})
+nutplots_noleg[[9]] <- legend
+
+# multiplot
+figs1 <- do.call("arrangeGrob", c(nutplots_noleg, ncol = 3))
+
+ggdraw() +
+  draw_plot(figs1) 
+
+ggsave("../../Plots/FigureS1.pdf", width = 10, height = 10) 
+```
+

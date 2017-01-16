@@ -1,0 +1,595 @@
+---
+title: "Alpha diversity"
+author: "Michelle Berry"
+output: html_document
+---
+
+```{r global_options, echo = FALSE}
+
+knitr::opts_chunk$set(
+  fig.align = 'center', 
+  warning = FALSE, 
+  message = FALSE
+)
+
+```
+
+```{r, echo=FALSE}
+source("chabs-global.R")
+```
+
+
+
+## Estimating diversity
+```{r}
+
+# My own subsetting function, similar to phyloseq::subset_taxa, except taxa can 
+# be passed as arguments within functions without weird environment errors
+#
+# Args:
+#   physeq: a phyloseq object
+#   taxrank: taxonomic rank to filter on
+#   taxa: a vector of taxa groups to filter on
+#
+# Returns: 
+#   a phyloseq object subsetted to the x taxa in taxrank
+my_subset_taxa <- function(physeq, taxrank, taxa) {
+  physeq_tax_sub <- tax_table(physeq)[tax_table(physeq)[ , taxrank] %in% taxa, ]
+  tax_table(physeq) <- physeq_tax_sub
+  return(physeq)
+}
+
+```
+
+Here we estimate alpha diversity by sampling with replacement 100x
+and averaging OTU richness and Simpson's E over each of the trials
+
+```{r, cache = TRUE}
+# Initialize parameters
+trials = 100
+min_lib = min(sample_sums(erie)) # Depth we are rarefying to
+
+# Groups to estimate alpha diversity for 
+mytaxa <- c(
+  "Bacteria", "NcBacteria", "Actinobacteria", "Alphaproteobacteria",
+  "Betaproteobacteria", "Bacteroidetes", "Gammaproteobacteria", 
+  "Deltaproteobacteria", "Verrucomicrobia"
+)
+names(mytaxa) <- mytaxa
+
+# Taxonomic ranks of mytaxa
+mytaxa_taxrank <- c(
+  "Kingdom", "Class", "Phylum", "Class", "Class", 
+  "Phylum", "Class", "Class", "Phylum"
+)
+names(mytaxa_taxrank) <- mytaxa
+
+# Data frame to hold alpha diversity estimates over trials
+alphadiv_df <- data.frame(matrix(nrow = nsamples(erie), ncol = trials))
+
+# Initialize empty df's for richness and evenness of all taxa in mytaxa
+richness <- lapply(mytaxa, function(x) {return(alphadiv_df)} )
+simpson <- lapply(mytaxa, function(x) {return(alphadiv_df)} )
+
+alphadiv_list <- list(richness = richness, simpson = simpson)
+
+
+# It is always important to set a seed when you subsample so your result is replicable 
+set.seed(3)
+
+# Run trials to subsample and estimate diversity
+for (i in 1:trials) {
+  # Subsample
+  rarefied_physeq <- rarefy_even_depth(erie, sample.size = min_lib, verbose = FALSE, replace = TRUE)
+  
+  # Generate alpha-diversity estimates for each taxonomic group
+  for (t in mytaxa) {
+    # Subset physeq object to taxa in mytaxa
+    if (t != "NcBacteria") {
+      physeq_sub <- my_subset_taxa(
+        physeq = rarefied_physeq, 
+        taxrank = mytaxa_taxrank[t], 
+        taxa = t
+      )
+    } else {
+      physeq_sub <- subset_taxa(physeq = rarefied_physeq, Class != "Cyanobacteria")
+    }
+    
+    # Calculate observed richness for that group and store value in a df column
+    richness <- estimate_richness(physeq_sub, measures = "Observed")[ ,1]
+    alphadiv_list$richness[[t]][ ,i] <- richness
+     
+    # Calculate Simpson's E for that group and store value in a df column
+    alphadiv_list$simpson[[t]][ ,i] <- (estimate_richness(physeq_sub, measures = "InvSimpson")[ ,1]/richness)
+
+  }
+}
+  
+```
+
+
+```{r}
+
+# Calculate the means of richness and inverse simpson from the 100 trials
+alphadiv_est <- lapply(alphadiv_list, function(div_measure) {
+    lapply(div_measure, function(taxa_group) {
+        alpha_mean <- rowMeans(taxa_group)
+        return(alpha_mean)
+    })  
+})
+
+# Convert alphadiv_est richness and simpson's E lists into wide data frames
+l <- lapply(alphadiv_est, function(x) {
+  # convert from list to data.frame
+  est_df <- plyr::ldply(.data = x, .fun = data.frame)
+  names(est_df) <- c("Taxa", "Diversity")
+  
+  # Add in SampleID column and spread to wide format
+  r <- est_df %>%
+    mutate(SampleID = rep(sample_names(erie), length(mytaxa)))
+  return(r)
+})
+
+# Merge sample metadata with these estimates
+merge_dat <- data.frame(sample_data(erie)) %>%
+  select(SampleID, Chla, pH, Phycocyanin, TP, Turbidity, Station, Date, Days) %>%
+  mutate(logChla = log(Chla)) %>%
+  mutate(logPhyco = log(Phycocyanin + 0.1)) %>%
+  mutate(logTP = log(TP)) %>%
+  mutate(logTurb = log(Turbidity))
+
+# Create a df with a "Diversity" column that includes richness and inv. simpson,
+# and log-chl a values from erie sample_data
+alpha_comb <- l$richness %>% 
+  left_join(y = l$simpson, by = c("Taxa", "SampleID")) %>%   # Join the richness and inv_simp df's
+  rename(Richness = Diversity.x, Simpson = Diversity.y) %>%  # rename columns to avoid confusion
+  left_join(merge_dat, by = "SampleID") %>%                  # Join with merged nutrient data
+  gather(key = "Alphadiv", value = "Estimate", Richness, Simpson) %>%
+  order_dates()
+
+
+```
+
+
+
+## Seasonal alpha diversity plots
+```{r}
+alphadiv_ncbacteria_simpson <- alpha_comb %>%
+  filter(Taxa == "NcBacteria") %>%
+  filter(Alphadiv == "Simpson") %>%
+  order_dates()
+
+seasonE <- ggplot(alphadiv_ncbacteria_simpson, aes(x = Date, y = Estimate, group = Station, color = Station, shape = Station)) +
+  geom_point(size = 2) +
+  geom_line() +
+  scale_color_manual(values = station_colors) +
+  ylab("Simpson's E") +
+  xlab("") +
+  scale_x_discrete(
+      breaks = c("7/8", "8/4", "9/2", "10/6"),
+      labels = c("Jul", "Aug", "Sep", "Oct"),
+      drop = FALSE
+  ) + 
+  theme(
+    legend.position = "none",
+    plot.title = element_text(face = "bold", size = 12)
+  ) +
+  ggtitle("Nc-Bacteria")
+
+alphadiv_ncbacteria_rich <- alpha_comb %>%
+  filter(Taxa == "NcBacteria") %>%
+  filter(Alphadiv == "Richness") %>%
+  order_dates()
+  
+seasonRich <- ggplot(alphadiv_ncbacteria_rich, aes(x = Date, y = Estimate, group = Station, color = Station, shape = Station)) +
+  geom_point(size = 2) +
+  geom_line() +
+  scale_color_manual(values = station_colors) +
+  ylab("Obs. Richness") +
+  xlab("") +
+  scale_x_discrete(
+      breaks = c("7/8", "8/4", "9/2", "10/6"),
+      labels = c("Jul", "Aug", "Sep", "Oct"),
+      drop = FALSE
+  ) + 
+  theme(
+    legend.position = "none",
+    plot.title = element_text(face = "bold", size = 12)) +
+  ggtitle("Nc-Bacteria")
+```
+
+
+## Alpha diversity vs Chla
+```{r}
+
+# Function to test whether there is a linear relationship 
+# between log chla and alpha diversity of a group
+#
+# Args:
+#   df: a data frame with columns for diversity estimate and bloom variable (e.g. logChla, logPhyco)
+#
+# Returns:
+#   a vector with the pvalue and R2 of the linear model
+test_alphadiv_pp <- function(df, bloomvar) {
+  
+  df_sub <- na.omit(df[, c(bloomvar, "Estimate")])
+  
+  # Fit a linear model 
+  fit <- lm(reformulate(termlabels = bloomvar, response = "Estimate"), data = df_sub)
+  
+  # Grab model outputs
+  fit_pvalue <- summary(fit)$coef[2,4]
+  fit_r2 <- summary(fit)$r.squared
+  
+  return(c(fit_pvalue, fit_r2))
+}
+
+```
+
+
+```{r fig.height=7, fig.width=13}
+
+# Function to make a ggplot scatterplot of logChla vs an alpha-diversity metric.
+# If the pvalue is below 0.05, it will also plot the fitted line
+#
+# Args:
+#   df: a melted data frame with a column called logChla and value for alpha-diversity
+#   measure: Alpha-diversity measure (e.g. "InvSimpson" or "Observed")
+#   group: Taxonomic group to plot (e.g. "Betaproteobacteria")
+#   pvalue: pvalue from linear model returned by test_alphadiv_pp
+#   r2: r2 from linear model returned by test_alphadiv_pp
+#
+# Returns:
+#   a ggplot
+make_alphadiv_plot <- function(df, bloomvar, measure, group, pvalue, p_x, r2) {
+  
+  g <- ggplot(df, aes_string(x = bloomvar, y = "Estimate")) + 
+    geom_point() +
+    ylab(measure) +
+    ggtitle(group) +
+    theme(plot.title = element_text(face = "bold", size = 12))
+  
+  
+  # Since we rounded to 3 sigfigs, estimates of 0 need to actually say "p < 0.001"
+  if (pvalue == 0) {
+    g <- g + annotate(
+      "text", 
+      x = p_x,
+      y = max(df$Estimate) - 0.03*max(df$Estimate), 
+      size = 3, 
+      label = "p < 0.001"
+    )
+  } else {
+    g <- g + annotate(
+        "text", 
+        x = p_x,
+        y = max(df$Estimate) - 0.03*max(df$Estimate), 
+        size = 3, 
+        label = paste("p =", pvalue)
+      ) 
+  }
+  
+  if (pvalue < 0.05) {
+    g <- g + 
+      annotate(
+        "text",
+        x = p_x,
+        y = max(df$Estimate) - 0.08*max(df$Estimate),
+        size = 3,
+        label = paste("R2 =", r2)
+      ) +
+      geom_smooth(method = "lm", size = 1)
+  }
+  
+  return(g)
+                     
+}
+```
+
+
+
+```{r}
+divs <- named_list("Richness", "Simpson")
+
+# apply alpha div test to each diversity index for each group
+alpha_models <- lapply(divs, function(d) {
+  alpha_sub <- alpha_comb %>% filter(Alphadiv == d)
+  lapply(mytaxa, function(t) {
+    alpha_sub <- alpha_sub %>% filter(Taxa == t)
+    # Fit linear model 
+    fit <- test_alphadiv_pp(alpha_sub, "logChla")
+    return(fit)
+  })
+})
+
+# Unlist
+alpha_results <- lapply(alpha_models, function(x) {
+  f <- x %>% 
+     unlist(use.names = FALSE) %>%
+     matrix(
+        nrow = length(mytaxa), 
+        ncol = 2, 
+        byrow = TRUE, 
+        dimnames = list(mytaxa, c("pvalue","r2"))
+    )
+    
+  # fdr correction on pvalues
+  f[ ,1] <- p.adjust(f[ ,1], method = "fdr") 
+  # Round to three significant digits
+  f <- round(f, digits = 3)
+})
+
+
+## Make plots for Simpson's E vs log chla
+simp_plots <- list()
+
+for (i in 1:length(mytaxa)) {
+  df <- filter(alpha_comb, Taxa == mytaxa[i]) %>%
+    filter(Alphadiv == "Simpson") 
+  simp_plots[[i]] <- make_alphadiv_plot(
+    df = df, 
+    bloomvar = "logChla",
+    measure = "Simpson's E", 
+    group = mytaxa[i],
+    pvalue = alpha_results$Simpson[i, 1],
+    p_x = 0.5,
+    r2 = alpha_results$Simpson[i, 2]
+  )
+}
+
+# Fit quadratic to alphaproteo evenness
+alphaproteo <- filter(alpha_comb, Taxa == "Alphaproteobacteria") %>%
+  filter(Alphadiv == "Simpson")
+quad_fit <- lm(Estimate ~ logChla + I(logChla^2), data = alphaproteo)
+summary(quad_fit)
+
+simp_plots[[4]] <- ggplot(alphaproteo, aes(x = logChla, y = Estimate)) + 
+  geom_point() + 
+  ylab("Simpson's E") +
+  ggtitle("Alphaproteobacteria") +
+  stat_smooth(method = "lm", formula = y ~ poly(x, 2)) +
+  annotate(
+    "text",
+    x = 0.9,
+    y = .34,
+    size = 3,
+    label = paste("p < 0.001") 
+  ) + 
+  annotate(
+    "text",
+    x = 0.9,
+    y = .31,
+    size = 3,
+    label = paste("R2 =", round(summary(quad_fit)$adj.r.squared, 3))
+  ) + 
+  theme(plot.title = element_text(face = "bold", size = 12))
+
+
+## Make plots for observed richness vs log chla
+rich_plots <- list()
+
+for (i in 1:length(mytaxa)) {
+  df <- filter(alpha_comb, Taxa == mytaxa[i]) %>%
+    filter(Alphadiv == "Richness")
+  rich_plots[[i]] <- make_alphadiv_plot(
+    df = df, 
+    bloomvar = "logChla",
+    measure = "Obs. Richness", 
+    group = mytaxa[i],
+    pvalue = alpha_results$Richness[i, 1],
+    p_x = 0.5,
+    r2 = alpha_results$Richness[i, 2]
+  )
+}
+
+
+```
+
+
+
+
+
+```{r fig.width = 7, fig.height=10}
+
+
+## Arrange plots for final figure
+ggdraw() +
+  draw_plot(seasonRich,      x = 0.01,  y = 0.73, width = 0.48, height = 0.24) + 
+  draw_plot(rich_plots[[4]], x = 0.01,  y = 0.49, width = 0.48, height = 0.24) +  
+  draw_plot(rich_plots[[5]], x = 0.01,  y = 0.25, width = 0.48, height = 0.24) +
+  draw_plot(rich_plots[[6]], x = 0.01,  y = 0.01, width = 0.48, height = 0.24) +
+  draw_plot(seasonE,         x = 0.52,  y = 0.73, width = 0.48, height = 0.24) + 
+  draw_plot(simp_plots[[4]], x = 0.52,  y = 0.49, width = 0.48, height = 0.24) +  
+  draw_plot(simp_plots[[5]], x = 0.52,  y = 0.25, width = 0.48, height = 0.24) +
+  draw_plot(simp_plots[[6]], x = 0.52,  y = 0.01, width = 0.48, height = 0.24) +
+  draw_plot_label(c("A", "B", "C", "D", "E", "F", "G", "H"),  c(0, 0, 0, 0, .52, .52, .52, .52), c(0.99, 0.74, 0.5, 0.26), size = 14)
+
+ggsave("../../Plots/Figure3.pdf", height = 10, width = 7)
+
+```
+
+
+```{r, fig.height=10, fig.width=7}
+figs2 <- arrangeGrob(
+  rich_plots[[3]], simp_plots[[3]], 
+  rich_plots[[7]], simp_plots[[7]], 
+  rich_plots[[8]], simp_plots[[8]],
+  rich_plots[[9]], simp_plots[[9]],
+  ncol = 2
+)
+
+ggdraw() +
+  draw_plot(figs2)
+
+ggsave("../../Plots/FigureS2.pdf", height = 12, width = 7)
+```
+
+# Relationship between alpha diversity and other bloom variables
+```{r}
+cor.test(log(nutrient$Chla), nutrient$pH)
+
+
+######## pH ###########
+
+# apply alpha div test to each diversity index for each group
+alpha_models <- lapply(divs, function(d) {
+  alpha_sub <- alpha_comb %>% filter(Alphadiv == d)
+  lapply(mytaxa, function(t) {
+    alpha_sub <- alpha_sub %>% filter(Taxa == t)
+    # Fit linear model 
+    fit <- test_alphadiv_pp(alpha_sub, "pH")
+    return(fit)
+  })
+})
+
+# Unlist
+alpha_results <- lapply(alpha_models, function(x) {
+  f <- x %>% 
+     unlist(use.names = FALSE) %>%
+     matrix(
+        nrow = length(mytaxa), 
+        ncol = 2, 
+        byrow = TRUE, 
+        dimnames = list(mytaxa, c("pvalue","r2"))
+    )
+    
+  # fdr correction on pvalues
+  f[ ,1] <- p.adjust(f[ ,1], method = "fdr") 
+  # Round to three significant digits
+  f <- round(f, digits = 3)
+})
+
+simp_plots_ph <- list()
+
+for (i in 1:length(mytaxa)) {
+  df <- filter(alpha_comb, Taxa == mytaxa[i]) %>%
+    filter(Alphadiv == "Simpson") 
+  simp_plots_ph[[i]] <- make_alphadiv_plot(
+    df = df, 
+    bloomvar = "pH",
+    measure = "Simpson's E", 
+    group = mytaxa[i],
+    pvalue = alpha_results$Simpson[i, 1],
+    p_x = 8.1,
+    r2 = alpha_results$Simpson[i, 2]
+  )
+}
+
+# Fit quadratic to alphaproteo evenness
+alphaproteo <- filter(alpha_comb, Taxa == "Alphaproteobacteria") %>%
+  filter(Alphadiv == "Simpson")
+quad_fit <- lm(Estimate ~ pH + I(pH^2), data = alphaproteo)
+summary(quad_fit)
+
+simp_plots_ph[[4]] <- ggplot(alphaproteo, aes(x = pH, y = Estimate)) + 
+  geom_point() + 
+  ylab("Simpson's E") +
+  ggtitle("Alphaproteobacteria") +
+  stat_smooth(method = "lm", formula = y ~ poly(x, 2)) +
+  annotate(
+    "text",
+    x = 8.1,
+    y = .34,
+    size = 3,
+    label = paste("p < 0.001") 
+  ) + 
+  annotate(
+    "text",
+    x =  8.1,
+    y = .31,
+    size = 3,
+    label = paste("R2 =", round(summary(quad_fit)$adj.r.squared, 3))
+  ) 
+
+```
+
+
+```{r}
+
+############# Phycocyanin #############
+# apply alpha div test to each diversity index for each group
+alpha_models <- lapply(divs, function(d) {
+  alpha_sub <- alpha_comb %>% filter(Alphadiv == d)
+  lapply(mytaxa, function(t) {
+    alpha_sub <- alpha_sub %>% filter(Taxa == t)
+    # Fit linear model 
+    fit <- test_alphadiv_pp(alpha_sub, "logPhyco")
+    return(fit)
+  })
+})
+
+# Unlist
+alpha_results <- lapply(alpha_models, function(x) {
+  f <- x %>% 
+     unlist(use.names = FALSE) %>%
+     matrix(
+        nrow = length(mytaxa), 
+        ncol = 2, 
+        byrow = TRUE, 
+        dimnames = list(mytaxa, c("pvalue","r2"))
+    )
+    
+  # fdr correction on pvalues
+  f[ ,1] <- p.adjust(f[ ,1], method = "fdr") 
+  # Round to three significant digits
+  f <- round(f, digits = 3)
+})
+
+simp_plots_phyco <- list()
+
+for (i in 1:length(mytaxa)) {
+  df <- filter(alpha_comb, Taxa == mytaxa[i]) %>%
+    filter(Alphadiv == "Simpson") 
+  simp_plots_phyco[[i]] <- make_alphadiv_plot(
+    df = df, 
+    bloomvar = "logPhyco",
+    measure = "Simpson's E", 
+    group = mytaxa[i],
+    pvalue = alpha_results$Simpson[i, 1],
+    p_x = -1.5,
+    r2 = alpha_results$Simpson[i, 2]
+  )
+}
+
+# Fit quadratic to alphaproteo evenness
+alphaproteo <- filter(alpha_comb, Taxa == "Alphaproteobacteria") %>%
+  filter(Alphadiv == "Simpson")
+quad_fit <- lm(Estimate ~ logPhyco + I(logPhyco^2), data = alphaproteo)
+summary(quad_fit)
+
+simp_plots_phyco[[4]] <- ggplot(alphaproteo, aes(x = logPhyco, y = Estimate)) + 
+  geom_point() + 
+  ylab("Simpson's E") +
+  ggtitle("Alphaproteobacteria") + 
+  stat_smooth(method = "lm", formula = y ~ poly(x, 2)) +
+  annotate(
+    "text",
+    x = -1.5,
+    y = .34,
+    size = 3,
+    label = paste("p = 0.035") 
+  ) + 
+  annotate(
+    "text",
+    x =  -1.5,
+    y = .31,
+    size = 3,
+    label = paste("R2 =", round(summary(quad_fit)$adj.r.squared, 3))
+  ) 
+```
+
+```{r, fig.height=10, fig.width=7}
+figs3 <- arrangeGrob(
+  simp_plots_phyco[[4]], simp_plots_ph[[4]], 
+  simp_plots_phyco[[5]], simp_plots_ph[[5]], 
+  simp_plots_phyco[[6]], simp_plots_ph[[6]]
+)
+
+ggdraw() +
+  draw_plot(figs3)
+
+ggsave("../../Plots/FigureS3.pdf", height = 10, width = 7)
+```
+
+
+

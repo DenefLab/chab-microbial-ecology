@@ -1,0 +1,491 @@
+---
+title: "Nc-bacterial community composition analyses"
+author: "Michelle Berry"
+output: 
+  html_document: 
+    toc: yes
+---
+
+```{r global_options, echo = FALSE}
+
+knitr::opts_chunk$set(
+  fig.align = 'center', 
+  warning = FALSE, 
+  message = FALSE
+)
+
+```
+
+```{r, echo=FALSE}
+source("chabs-global.R")
+library(pander)
+```
+
+
+# Figure 4
+
+
+```{r}
+
+# Subset to non-cyanobacteria and scale internally
+ncbacteria <- 
+  erie %>%
+    subset_taxa(Class != "Cyanobacteria") %>%
+    scale_reads(round = "round")
+
+
+# Generate pcoa scores for each subset
+ncbact_pcoa <- ordinate(
+      physeq = ncbacteria,
+      method = "PCoA",
+      distance = "bray"
+)
+
+# Generate a df to plot pcoa for each subset
+pcoa_df <- plot_ordination(
+  physeq = ncbacteria,
+  axes = 1:3,
+  ordination = ncbact_pcoa,
+  justDF = TRUE
+)
+
+pcoa_df <- pcoa_df %>% 
+  rename(PC1 = Axis.1, PC2 = Axis.2, PC3 = Axis.3) %>%
+  order_dates() %>%
+  # Flip orientation of PC2 for Cyanobacteria (does not affect interpretation)
+  mutate(PC2 = -PC2) 
+
+
+# Generate relative, lingoes-corrected eigenvalues for PC1 and PC2
+pcs <- c(
+  PC1 = signif(ncbact_pcoa$values$Rel_corr_eig[1]*100, 3),
+  PC2 = signif(ncbact_pcoa$values$Rel_corr_eig[2]*100, 3),
+  PC3 = signif(ncbact_pcoa$values$Rel_corr_eig[3]*100, 3)
+)
+
+```
+
+```{r}
+# Function to create a plot of time (x-axis) vs PC scores (y-axis)
+plot_pcts <- function(df, pc, eigs) {
+  ggplot(df, 
+    aes_string(x = "Date", y = pc, group = "Station", color = "Station", shape = "Station")) +
+      geom_point(size = 2.5) +
+      geom_line(size = 1.1) + 
+      scale_color_manual(values = station_colors) +
+      scale_x_discrete(
+        breaks = c("7/8", "8/4", "9/2", "10/6"),
+        labels = c("Jul", "Aug", "Sep", "Oct"),
+        drop = FALSE
+      ) +  
+      ylab(paste(pc, " ", eigs[pc], "%")) +
+      theme(
+        axis.title.x = element_blank(),
+        axis.title.y = element_text(size = 12, face = "bold"),
+        axis.text = element_text(size = 10),
+        plot.title = element_text(face = "bold", size = 16),
+        legend.position = "none",
+        plot.margin = unit(c(0.2, 0.2, 0.2, 0.2), "cm")
+      ) 
+}
+
+# Non-cyano PC time series plots
+ncbact_pcs <- named_list("PC1", "PC2", "PC3")
+
+ncbact_pc_plots <- lapply(ncbact_pcs,
+  function(x) {
+    plot_pcts(pcoa_df, x, eigs = pcs)
+  }
+)
+
+```
+
+
+```{r}
+
+# Plot for pH
+ph_plot <- ggplot(pcoa_df, aes(x = PC1, y = pH)) +
+  geom_point(size = 2.5, aes(shape = Station, color = Station)) +
+  scale_color_manual(values = station_colors) +
+  geom_smooth(method = "lm", color = "black") +
+  theme(
+    axis.title = element_text(size = 12, face = "bold"),
+    axis.text = element_text(size = 10)
+  ) 
+
+legend <- grab_legend(ph_plot)
+ph_plot <- ph_plot + theme(legend.position = "none")
+
+# Plot for Temperature
+temp_plot <- ggplot(pcoa_df, aes(x = PC2, y = Temp)) +
+  geom_point(size = 2.5, aes(shape = Station, color = Station)) +
+  scale_color_manual(values = station_colors) +
+  geom_smooth(method = "lm", color = "black") +
+  theme(
+    axis.title = element_text(size = 12, face = "bold"),
+    axis.text = element_text(size = 10),
+    legend.position = "none"
+  ) +
+  ylab("Temperature")
+
+# Plot for SpCond
+spcond_plot <- ggplot(pcoa_df, aes(x = PC3, y = SpCond)) +
+  geom_point(size = 2.5, aes(shape = Station, color = Station)) +
+  scale_color_manual(values = station_colors) +
+  geom_smooth(method = "lm", color = "black") +
+  theme(
+    axis.title = element_text(size = 12, face = "bold"),
+    axis.text = element_text(size = 10),
+    legend.position = "none"
+  ) +
+  ylab("Specific Conductivity")
+
+```
+
+## Compiled plot
+```{r fig.height=7, fig.width=12}
+
+ggdraw() +
+  ## non-cyano
+  draw_plot(ncbact_pc_plots$PC1, x = 0.02, y = 0.61, width = 0.3, height = 0.35) +
+  draw_plot(ncbact_pc_plots$PC2, x = 0.34, y = 0.61, width = 0.3, height = 0.35) +
+  draw_plot(ncbact_pc_plots$PC3, x = 0.66, y = 0.61, width = 0.3, height = 0.35) +
+  draw_plot(ph_plot, x = 0.02, y = 0.22, width = 0.3, height = 0.35) +
+  draw_plot(temp_plot, x = 0.34, y = 0.22, width = 0.3, height = 0.35) +
+  draw_plot(spcond_plot, x = 0.66, y = 0.22, width = 0.3, height = 0.35) +
+  draw_plot_label(c("A", "B", "C", "D", "E", "F"),  c(0.02, 0.02, 0.34, 0.34, 0.65, 0.65), c(0.97, 0.61, 0.97, 0.61, 0.97, 0.61), size = 14) +
+  draw_plot(legend, x = 0.02, y = 0.02, width = 0.2, height = 0.2)
+
+  
+ggsave("../../Plots/Figure4.pdf", width = 12, height = 7) 
+```
+
+# Figure 4 Statistics
+
+How many PCoA dimensions should we examine? 
+
+```{r}
+#pdf("../../Plots/FigureS4.pdf", width = 6, height = 4) 
+plot(1:nrow(ncbact_pcoa$values), ncbact_pcoa$values$Rel_corr_eig, xlab = 
+       "Principal Coordinate", ylab = "Relative eigenvalue")
+
+#dev.off()
+```
+
+How good is my PCoA in three dimensions?
+```{r}
+pcoa_dist <- as.vector(dist(ncbact_pcoa$vectors[,1:3]))
+bray_dist <- as.vector(phyloseq::distance(ncbacteria, method = "bray"))
+
+plot(bray_dist, pcoa_dist) +
+ abline(lm(pcoa_dist~bray_dist), col = "blue")
+
+summary(lm(pcoa_dist~bray_dist))
+```
+
+
+```{r}
+# Histogram of bray-curtis distance
+hist(bray_dist)
+```
+
+What is the max bray-curtis between time points for each site? 
+```{r}
+
+# Nearshore 1 
+n1 <- subset_samples(erie_scale, Station == "nearshore1")
+n1_bdist <- phyloseq::distance(n1, method = "bray")
+max(as.matrix(n1_bdist)[1,])
+
+
+# Nearshore 2
+n2 <- subset_samples(erie_scale, Station == "nearshore2")
+n2_bdist <- phyloseq::distance(n2, method = "bray")
+max(as.matrix(n2_bdist)[1,])
+
+# Offshore 
+o <- subset_samples(erie_scale, Station == "offshore")
+o_bdist <- phyloseq::distance(o, method = "bray")
+max(as.matrix(o_bdist)[1,])
+
+
+```
+
+What is the bray-curtis between the first and last time points
+```{r}
+
+# Nearshore 1 
+n1 <- subset_samples(erie_scale, Station == "nearshore1" & Date %in% c("6/16", "10/27"))
+n1_bdist <- phyloseq::distance(n1, method = "bray")
+n1_bdist
+
+# Nearshore 2
+n2 <- subset_samples(erie_scale, Station == "nearshore2" & Date %in% c("6/16", "10/27"))
+n2_bdist <- phyloseq::distance(n2, method = "bray")
+n2_bdist
+
+# Offshore 
+o <- subset_samples(erie_scale, Station == "offshore" & Date %in% c("6/16", "10/27"))
+o_bdist <- phyloseq::distance(o, method = "bray")
+o_bdist
+
+```
+
+
+
+## Linear models
+```{r, fig.height=10, fig.width=10}
+
+# Variables to include in cyano models
+cyano_vars <- c("Nitrate", "SRP", "Temp", "H2O2", "SpCond", "Ammonia", "Turbidity", "TP", "Days")
+
+
+# Examine distributions of potential env variables to normalize
+par(mfrow = c(4,3))
+for (var in cyano_vars) {
+  hist(nutrient[ ,var], main = "", xlab = var, ylab = "" )
+}
+```
+
+```{r}
+# Adjusted variables to include in cyano models
+cyano_vars <- c("sqrt(Nitrate)", "log(SRP)", "Temp", "log(H2O2)", "SpCond", "log(Ammonia)", "log(Turbidity)", "log(TP)")
+
+
+# Variables to include in nc-bacteria models
+non_cyano_vars <- c(cyano_vars, "pH",  "logParMC", "logChla", "logPhyco")
+
+
+# Impute SpCond values for nearshore 1 on Sep 2 and Sep 8 with value for nearshore 2
+
+# Change 9/2 value
+pcoa_df$SpCond[pcoa_df$Date == "9/2" & pcoa_df$Station == "nearshore1"] <- 
+  pcoa_df$SpCond[pcoa_df$Date == "9/2" & pcoa_df$Station == "nearshore2"]
+# Change 9/8 value
+pcoa_df$SpCond[pcoa_df$Date == "9/8" & pcoa_df$Station == "nearshore1"] <- 
+  pcoa_df$SpCond[pcoa_df$Date == "9/8" & pcoa_df$Station == "nearshore2"]
+
+
+# Add log scaled variables
+pcoa_df <- pcoa_df %>%
+  mutate(logParMC = log(ParMC + 0.1)) %>%
+  mutate(logChla = log(Chla)) %>%
+  mutate(logPhyco = log(Phycocyanin + 0.1))
+  
+```
+
+
+```{r env variables}
+
+get_detrend_models <- function(response, dat) {
+  fit <- lm(reformulate(termlabels = "Days", response = response), data = dat)
+  return(fit$residuals)
+}
+
+get_time_models <- function(vars, response, dat) {
+  models <- list()
+  for (var in vars) {
+    models[[var]] <- lm(reformulate(termlabels = c(var, "Days"), response = response), data = dat)
+  }
+  return(models)
+}
+
+get_notime_models <- function(vars, response, dat) {
+  models <- list()
+  for (var in vars) {
+    models[[var]] <- lm(reformulate(termlabels = var, response = response), data = dat)
+  }
+  return(models)
+}
+```
+
+```{r}
+ncbact_pcs <- named_list("PC1", "PC2", "PC3")
+
+pcoa_df$PC1detrend <- get_detrend_models(response = "PC1", dat = pcoa_df)
+pcoa_df$PC2detrend <- get_detrend_models(response = "PC2", dat = pcoa_df)
+pcoa_df$PC3detrend <- get_detrend_models(response = "PC3", dat = pcoa_df)
+
+# Get the simple linear models for each variable along each PC
+non_cyano_models <- lapply(ncbact_pcs, function(x) {
+  if (x == "PC2") {
+    get_notime_models(non_cyano_vars, x, dat = pcoa_df)
+  } else {
+    get_time_models(non_cyano_vars, x, dat = pcoa_df)
+  }
+   
+})
+
+# Get rsquared for each model
+rsquared <- lapply(non_cyano_models, function(x) {
+  lapply(x, function(y) {
+    r2 <- summary(y)$r.squared
+    return(r2)
+  })
+})
+
+rsquared_df <- rbind(data.frame(rsquared$PC1), data.frame(rsquared$PC2), data.frame(rsquared$PC3))
+rsquared_df$PC <- c("PC1", "PC2", "PC3")
+
+pander(t(as.matrix(rsquared_df)))
+
+
+# Get rsquared for each model
+pvalue <- lapply(non_cyano_models, function(x) {
+  lapply(x, function(y) {
+    p <- summary(y)$coefficients[2,4]
+    return(p)
+  })
+})
+
+pvalue_df <- rbind(data.frame(pvalue$PC1), data.frame(pvalue$PC2), data.frame(pvalue$PC3))
+pvalue_df$PC <- c("PC1", "PC2", "PC3")
+
+pander(t(as.matrix(pvalue_df)))
+```
+
+### Best models
+```{r}
+pc1_ph <- lm(PC1 ~ pH + Days, data = pcoa_df)
+summary(pc1_ph)
+pc1_chla <- lm(PC1 ~ logChla + Days, data = pcoa_df)
+summary(pc1_chla)
+pc2 <- lm(PC2 ~ Temp + Turbidity + SpCond + SRP, data = pcoa_df)
+summary(pc2)
+pc3 <- lm(PC3 ~ SpCond, data = pcoa_df)
+summary(pc3)
+```
+
+
+### Distribution of model residuals
+```{r fig.height=4, fig.width=10}
+#pdf("../../Plots/FigureS5.pdf", width = 10, height = 3) 
+par(mfrow = c(1, 4))
+hist(residuals(pc1_ph))
+hist(residuals(pc1_chla))
+hist(residuals(pc2))
+hist(residuals(pc3))
+
+#dev.off()
+```
+All distributions look normal enough.
+
+
+
+### Temporal autocorrelation of model residuals:
+```{r, fig.width=14, fig.height=14}
+
+#pdf("../../Plots/FigureS6.pdf", width = 14, height = 14) 
+
+par(mfrow = c(4, 3))
+# Look at temporal autocorrelation
+n1 <- which(pcoa_df$Station == "nearshore1")
+n2 <- which(pcoa_df$Station == "nearshore2")
+o <- which(pcoa_df$Station == "offshore")
+
+n1_ph <- which(!is.na(pcoa_df$pH) & pcoa_df$Station == "nearshore1")
+n2_ph <- which(!is.na(pcoa_df$pH) & pcoa_df$Station == "nearshore2")
+o_ph <- which(!is.na(pcoa_df$pH) & pcoa_df$Station == "offshore")
+
+
+acf(residuals(pc1_ph)[n1_ph], main = "PC1 ~ pH; nearshore 1")
+acf(residuals(pc1_ph)[n2_ph], main = "PC1 ~ pH; nearshore 2")
+acf(residuals(pc1_ph)[o_ph], main = "PC1 ~ pH; offshore")
+
+
+acf(residuals(pc1_chla)[n1], main = "PC1 ~ chla; nearshore 1")
+acf(residuals(pc1_chla)[n2], main = "PC1 ~ chla; nearshore 2")
+acf(residuals(pc1_chla)[o], main = "PC1 ~ chla; offshore")
+
+
+acf(residuals(pc2)[n1], main = "PC2 ~ Temp; nearshore 1")
+acf(residuals(pc2)[n2], main = "PC2 ~ Temp; nearshore 2")
+acf(residuals(pc2)[o], main = "PC2 ~ Temp; offshore")
+
+
+acf(residuals(pc3)[n1], main = "PC3 ~ SpCond; nearshore 1")
+acf(residuals(pc3)[n2], main = "PC3 ~ SpCond; nearshore 2")
+acf(residuals(pc3)[o], main = "PC3 ~ SpCond; offshore")
+
+#dev.off()
+
+```
+
+Partial autocorrelation function:
+
+```{r fig.width=14, fig.height=14}
+par(mfrow = c(4, 3))
+
+
+pacf(residuals(pc1_ph)[n1_ph], main = "PC1 ~ pH; nearshore 1")
+pacf(residuals(pc1_ph)[n2_ph], main = "PC1 ~ pH; nearshore 2")
+pacf(residuals(pc1_ph)[o_ph], main = "PC1 ~ pH; offshore")
+
+pacf(residuals(pc1_chla)[n1], main = "PC1 ~ pH; nearshore 1")
+pacf(residuals(pc1_chla)[n2], main = "PC1 ~ pH; nearshore 2")
+pacf(residuals(pc1_chla)[o], main = "PC1 ~ pH; offshore")
+
+pacf(residuals(pc2)[n1], main = "PC2 ~ Temp; nearshore 1")
+pacf(residuals(pc2)[n2], main = "PC2 ~ Temp; nearshore 2")
+pacf(residuals(pc2)[o], main = "PC2 ~ Temp; offshore")
+
+
+pacf(residuals(pc3)[n1], main = "PC3 ~ SpCond; nearshore 1")
+pacf(residuals(pc3)[n2], main = "PC3 ~ SpCond; nearshore 2")
+pacf(residuals(pc3)[o], main = "PC3 ~ SpCond; offshore")
+
+
+```
+
+
+
+
+### Cross validation error
+leaving out one time point at a time:
+```{r}
+dates <- levels(pcoa_df$Date)
+loocv <- rep(0, length(dates))
+names(loocv) <- dates
+
+# PC1
+for (date in dates) {
+  train <- filter(pcoa_df, Date != date)
+  test <- filter(pcoa_df, Date == date)
+  fit <- lm(PC1 ~ pH + Days, data = train)
+  pred <- predict(fit, test)
+  loocv[date] <- mean((test$PC1 - pred)^2)
+}
+mean(loocv[-18])
+
+
+# PC1
+for (date in dates) {
+  train <- filter(pcoa_df, Date != date)
+  test <- filter(pcoa_df, Date == date)
+  fit <- lm(PC1 ~ logChla + Days, data = train)
+  pred <- predict(fit, test)
+  loocv[date] <- mean((test$PC1 - pred)^2)
+}
+mean(loocv)
+
+# PC2
+for (date in dates) {
+  train <- filter(pcoa_df, Date != date)
+  test <- filter(pcoa_df, Date == date)
+  fit <- lm(PC2 ~ Temp, data = train)
+  pred <- predict(fit, test)
+  loocv[date] <- mean((test$PC2 - pred)^2)
+}
+mean(loocv)
+
+# PC3
+for (date in pcoa_df$Date) {
+  train <- filter(pcoa_df, Date != date)
+  test <- filter(pcoa_df, Date == date)
+  fit <- lm(PC3 ~ SpCond, data = train)
+  pred <- predict(fit, test)
+  loocv[date] <- mean((test$PC3 - pred)^2)
+}
+mean(loocv)
+```
+
